@@ -1,4 +1,4 @@
-name: Joyeuse XNU build probe
+name: Joyeuse XNU with pthread provider
 
 on:
   workflow_dispatch:
@@ -58,10 +58,11 @@ jobs:
           from pathlib import Path
           import shutil,re
           files=[]
-          for p in sorted(Path('sweet/xnu/patches').glob('*.patch')):
-              if 1<=int(p.name[:4])<=18:
+          for p in sorted(Path('sweet/xnu/patches').iterdir()):
+              if re.match(r'^\d{4}-',p.name) and p.suffix in ('.patch','.sh') and 1<=int(p.name[:4])<=19:
                   shutil.copy2(p,Path('dxb/patches')/p.name);files.append(p.name)
-          assert len(files)==18
+          assert sum(n.endswith('.patch') for n in files)==19
+          assert [n for n in files if n.endswith('.sh')]==['0019-stage-libpthread.sh']
           Path('evidence/patches.txt').write_text('\n'.join(files)+'\n')
           p=Path('dxb/build.sh');s=p.read_text()
           old='ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"'
@@ -79,6 +80,9 @@ jobs:
         run: |
           set -euo pipefail
           brew install jq gum bash cmake ninja
+          if ! command -v xcodes >/dev/null 2>&1; then
+            brew install xcodes
+          fi
           xcodebuild -version >> evidence/environment.txt
           xcrun --find iig >> evidence/environment.txt
 
@@ -93,6 +97,8 @@ jobs:
           bash build.sh 2>&1 | tee ../evidence/build.log
           test -s fakeroot/System/Library/Kernels/kernel.development.sweet
           test ! -e xnu/bsd/dev/sweet_ufs.c
+          test -s xnu/bsd/pthread/sweet_libpthread/kern/kern_init.c
+          test -s xnu/bsd/pthread/sweet_pthread_init.c
 
       - name: Collect diagnostics even when compilation fails
         if: always()

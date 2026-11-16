@@ -78,7 +78,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install jq gum bash cmake ninja xcodesorg/made/xcodes
+          brew install jq gum bash cmake ninja
           xcodebuild -version >> evidence/environment.txt
           xcrun --find iig >> evidence/environment.txt
 

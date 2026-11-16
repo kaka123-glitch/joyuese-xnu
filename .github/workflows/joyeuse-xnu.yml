@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   kernel:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 120
     env:
       MACOS_VERSION: '13.5'

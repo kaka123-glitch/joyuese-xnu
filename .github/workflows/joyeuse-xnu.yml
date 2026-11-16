@@ -1,0 +1,142 @@
+name: Joyeuse XNU build probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: joyeuse-xnu-probe
+  cancel-in-progress: false
+
+jobs:
+  kernel:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      MACOS_VERSION: '13.5'
+      ARCH_CONFIG: ARM64
+      KERNEL_CONFIG: DEVELOPMENT
+      MACHINE_CONFIG: SWEET
+      SWEET_SHA: 45263bee51df4a0f55cdf9c649af886399488ddb
+      DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
+    steps:
+      - name: Select Xcode and record environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python3 - <<'PY'
+          import pathlib,os,re
+          choices=[]
+          for p in pathlib.Path('/Applications').glob('Xcode_*.app'):
+              m=re.fullmatch(r'Xcode_(16\.[0-9.]+)\.app',p.name)
+              if m: choices.append((tuple(map(int,m[1].split('.'))),p))
+          if not choices: raise SystemExit('No Xcode 16 installation; inspect runner image before changing compiler')
+          p=min(choices)[1]
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write('DEVELOPER_DIR='+str(p/'Contents/Developer')+'\n')
+          print('Selected',p)
+          PY
+          sw_vers > evidence/environment.txt
+          ls -d /Applications/Xcode*.app >> evidence/environment.txt
+
+      - name: Fetch pinned sources and prepare minimal patch set
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init -q sweet
+          git -C sweet fetch -q --depth 1 https://github.com/dipa-studio/ios-sweet.git "$SWEET_SHA"
+          git -C sweet checkout -q FETCH_HEAD
+          test "$(git -C sweet rev-parse HEAD)" = "$SWEET_SHA"
+          git init -q dxb
+          git -C dxb fetch -q --depth 1 https://github.com/blacktop/darwin-xnu-build.git "$DXB_SHA"
+          git -C dxb checkout -q FETCH_HEAD
+          test "$(git -C dxb rev-parse HEAD)" = "$DXB_SHA"
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil,re
+          files=[]
+          for p in sorted(Path('sweet/xnu/patches').glob('*.patch')):
+              if 1<=int(p.name[:4])<=18:
+                  shutil.copy2(p,Path('dxb/patches')/p.name);files.append(p.name)
+          assert len(files)==18
+          Path('evidence/patches.txt').write_text('\n'.join(files)+'\n')
+          p=Path('dxb/build.sh');s=p.read_text()
+          old='ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"'
+          assert old in s
+          s=s.replace(old,'ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"')
+          marker='warning "Skipping patch ${PATCH} (already upstream, previously applied, or malformed): ${APPLY_CHECK}"'
+          assert s.count(marker)==1
+          s=s.replace(marker,'if [[ "$(basename "$PATCH")" =~ ^[0-9]{4}- ]]; then echo "Required device patch failed: $PATCH" >&2; exit 1; fi\n                '+marker)
+          p.write_text(s)
+          PY
+          printf 'sweet=%s\ndxb=%s\n' "$SWEET_SHA" "$DXB_SHA" > evidence/source-pins.txt
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install jq gum bash cmake ninja xcodesorg/made/xcodes
+          xcodebuild -version >> evidence/environment.txt
+          xcrun --find iig >> evidence/environment.txt
+
+      - name: Compile kernel (new toolchain compatibility probe)
+        id: compile
+        shell: bash
+        env:
+          MAKEFLAGS: -k
+        run: |
+          set -euo pipefail
+          cd dxb
+          bash build.sh 2>&1 | tee ../evidence/build.log
+          test -s fakeroot/System/Library/Kernels/kernel.development.sweet
+          test ! -e xnu/bsd/dev/sweet_ufs.c
+
+      - name: Collect diagnostics even when compilation fails
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence
+          if test -f dxb/xnu/iokit/IOKit/IORPC.h; then
+            cp dxb/xnu/iokit/IOKit/IORPC.h evidence/IORPC.h
+          fi
+          if test -d dxb/build/xnu.obj; then
+            python3 - <<'PY'
+          from pathlib import Path
+          import tarfile
+          root=Path('dxb/build/xnu.obj')
+          with tarfile.open('evidence/generated-interfaces.tgz','w:gz') as t:
+              for p in root.rglob('*'):
+                  if p.is_file() and p.suffix in ('.h','.cpp') and p.stat().st_size<2000000:
+                      t.add(p,arcname=str(p.relative_to(root)))
+          PY
+          fi
+          printf '%s\n' 'Build probe only. No phone image and no claim of hardware compatibility.' > evidence/STATUS.txt
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: joyeuse-xnu-diagnostics
+          path: evidence/
+          retention-days: 7
+
+      - name: Package untested kernel candidate
+        if: success()
+        shell: bash
+        run: |
+          mkdir -p candidate
+          cp dxb/fakeroot/System/Library/Kernels/kernel.development.sweet candidate/
+          cp evidence/source-pins.txt evidence/patches.txt candidate/
+          (cd candidate && shasum -a 256 kernel.development.sweet > SHA256SUMS)
+          printf '%s\n' 'UNTESTED KERNEL. Do not flash. Return to agent for inspection and boot packaging.' > candidate/STATUS.txt
+
+      - name: Upload untested kernel candidate
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: joyeuse-xnu-candidate
+          path: candidate/
+          retention-days: 7

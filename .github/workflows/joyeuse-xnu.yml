@@ -1,4 +1,4 @@
-name: Joyeuse XNU with pthread provider
+name: Joyeuse XNU with pthread and AES
 
 on:
   workflow_dispatch:
@@ -59,10 +59,10 @@ jobs:
           import shutil,re
           files=[]
           for p in sorted(Path('sweet/xnu/patches').iterdir()):
-              if re.match(r'^\d{4}-',p.name) and p.suffix in ('.patch','.sh') and 1<=int(p.name[:4])<=19:
+              if re.match(r'^\d{4}-',p.name) and p.suffix in ('.patch','.sh') and 1<=int(p.name[:4])<=20:
                   shutil.copy2(p,Path('dxb/patches')/p.name);files.append(p.name)
-          assert sum(n.endswith('.patch') for n in files)==19
-          assert [n for n in files if n.endswith('.sh')]==['0019-stage-libpthread.sh']
+          assert sum(n.endswith('.patch') for n in files)==20
+          assert [n for n in files if n.endswith('.sh')]==['0019-stage-libpthread.sh','0020-stage-bearssl.sh']
           Path('evidence/patches.txt').write_text('\n'.join(files)+'\n')
           p=Path('dxb/build.sh');s=p.read_text()
           old='ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"'
@@ -99,6 +99,7 @@ jobs:
           test ! -e xnu/bsd/dev/sweet_ufs.c
           test -s xnu/bsd/pthread/sweet_libpthread/kern/kern_init.c
           test -s xnu/bsd/pthread/sweet_pthread_init.c
+          test -s xnu/libkern/crypto/sweet_bearssl/src/symcipher/aes_ct.c
 
       - name: Collect diagnostics even when compilation fails
         if: always()
